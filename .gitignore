@@ -1,0 +1,94 @@
+# ========================
+# Environment & Secrets
+# ========================
+.env
+.env.*
+!.env.example
+
+# ========================
+# Python
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# ========================
+# Virtual Environments
+# ========================
+venv/
+.venv/
+env/
+ENV/
+
+# ========================
+# Testing & Coverage
+# ========================
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.coverage.*
+
+# ========================
+# IDE & Editors
+# ========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ========================
+# Logs
+# ========================
+logs/
+*.log
+
+# ========================
+# Large Data Files
+# ========================
+*.csv
+*.zip
+*.tar.gz
+*.parquet
+
+# ========================
+# ML Models & Weights
+# ========================
+medcat_model.zip
+medcat_model/
+*.dat
+*.bin
+*.pt
+*.pth
+*.onnx
+*.safetensors
+
+# ========================
+# Jupyter Notebooks
+# ========================
+.ipynb_checkpoints/
+
+# ========================
+# Nested Repositories
+# ========================
+medverify-api/
+
+# ========================
+# Project-Specific
+# ========================
+.claude/
+PRD.md
+TODO.md
+
+# ========================
+# OS-Specific
+# ========================
+Thumbs.db
+*.Zone.Identifier

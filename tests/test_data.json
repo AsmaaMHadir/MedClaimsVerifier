@@ -1,0 +1,237 @@
+{
+  "extract_tests": [
+    {
+      "id": "EXT001",
+      "category": "drug_detection",
+      "input": "Patient takes Metformin for diabetes",
+      "expected_entities": [
+        {"name": "Metformin", "type": "Drug"},
+        {"name": "diabetes", "type": "Disease"}
+      ]
+    },
+    {
+      "id": "EXT002",
+      "category": "drug_disease",
+      "input": "Hypertension controlled with Lisinopril",
+      "expected_entities": [
+        {"name": "Hypertension", "type": "Disease"},
+        {"name": "Lisinopril", "type": "Drug"}
+      ]
+    },
+    {
+      "id": "EXT003",
+      "category": "drug_only",
+      "input": "Aspirin 81mg daily",
+      "expected_entities": [
+        {"name": "Aspirin", "type": "Drug"}
+      ]
+    },
+    {
+      "id": "EXT004",
+      "category": "symptoms",
+      "input": "Presents with chest pain and shortness of breath",
+      "expected_entities": [
+        {"name": "chest pain", "type": "Symptom"},
+        {"name": "shortness of breath", "type": "Symptom"}
+      ]
+    },
+    {
+      "id": "EXT005",
+      "category": "negation",
+      "input": "No evidence of heart failure",
+      "expected_entities": [
+        {"name": "heart failure", "type": "Disease", "negated": true}
+      ]
+    },
+    {
+      "id": "EXT006",
+      "category": "disease_only",
+      "input": "Type 2 Diabetes Mellitus diagnosed in 2020",
+      "expected_entities": [
+        {"name": "Type 2 Diabetes", "type": "Disease"}
+      ]
+    },
+    {
+      "id": "EXT007",
+      "category": "drug_only",
+      "input": "Ibuprofen 400mg PRN for pain",
+      "expected_entities": [
+        {"name": "Ibuprofen", "type": "Drug"}
+      ]
+    },
+    {
+      "id": "EXT008",
+      "category": "disease_only",
+      "input": "History of myocardial infarction",
+      "expected_entities": [
+        {"name": "myocardial infarction", "type": "Disease"}
+      ]
+    },
+    {
+      "id": "EXT009",
+      "category": "negation_multi",
+      "input": "Denies fever, chills, or night sweats",
+      "expected_entities": [
+        {"name": "fever", "type": "Symptom", "negated": true},
+        {"name": "chills", "type": "Symptom", "negated": true},
+        {"name": "night sweats", "type": "Symptom", "negated": true}
+      ]
+    },
+    {
+      "id": "EXT010",
+      "category": "drug_disease",
+      "input": "Warfarin therapy for atrial fibrillation",
+      "expected_entities": [
+        {"name": "Warfarin", "type": "Drug"},
+        {"name": "atrial fibrillation", "type": "Disease"}
+      ]
+    },
+    {
+      "id": "EXT011",
+      "category": "edge_case",
+      "input": "The weather is nice today",
+      "expected_entities": []
+    },
+    {
+      "id": "EXT012",
+      "category": "abbreviations",
+      "input": "Patient has DM2 on MET",
+      "expected_entities": [
+        {"name": "DM2", "type": "Disease"},
+        {"name": "MET", "type": "Drug"}
+      ]
+    },
+    {
+      "id": "EXT013",
+      "category": "disease_only",
+      "input": "Diagnosed with cancer and started chemotherapy",
+      "expected_entities": [
+        {"name": "cancer", "type": "Disease"}
+      ]
+    },
+    {
+      "id": "EXT014",
+      "category": "vitals",
+      "input": "Blood pressure 120/80 mmHg",
+      "expected_entities": []
+    },
+    {
+      "id": "EXT015",
+      "category": "drug_disease",
+      "input": "Taking atorvastatin for hyperlipidemia",
+      "expected_entities": [
+        {"name": "atorvastatin", "type": "Drug"},
+        {"name": "hyperlipidemia", "type": "Disease"}
+      ]
+    }
+  ],
+  "verify_tests": [
+    {
+      "id": "VER001",
+      "category": "treats",
+      "input": "Metformin treats Type 2 Diabetes",
+      "expected_status": "SUPPORTED",
+      "expected_relationship": "TREATS"
+    },
+    {
+      "id": "VER002",
+      "category": "treats",
+      "input": "Lisinopril is used for hypertension",
+      "expected_status": "SUPPORTED",
+      "expected_relationship": "TREATS"
+    },
+    {
+      "id": "VER003",
+      "category": "invalid_treats",
+      "input": "Aspirin treats peptic ulcer disease",
+      "expected_status": "NOT_FOUND",
+      "expected_relationship": null
+    },
+    {
+      "id": "VER004",
+      "category": "side_effect",
+      "input": "Ibuprofen causes gastrointestinal hemorrhage",
+      "expected_status": "PARTIAL",
+      "expected_relationship": null,
+      "note": "Side effect detection requires Symptom type inference - future enhancement"
+    },
+    {
+      "id": "VER005",
+      "category": "invalid_side_effect",
+      "input": "Metformin causes headaches",
+      "expected_status": "NOT_FOUND",
+      "expected_relationship": null
+    },
+    {
+      "id": "VER006",
+      "category": "treats",
+      "input": "Warfarin treats thrombotic disease",
+      "expected_status": "SUPPORTED",
+      "expected_relationship": "TREATS"
+    },
+    {
+      "id": "VER007",
+      "category": "treats",
+      "input": "Atorvastatin treats hypertriglyceridemia",
+      "expected_status": "SUPPORTED",
+      "expected_relationship": "TREATS"
+    },
+    {
+      "id": "VER008",
+      "category": "invalid_treats",
+      "input": "Acetaminophen treats diabetes",
+      "expected_status": "PARTIAL",
+      "expected_relationship": null,
+      "note": "Entities found but no TREATS relationship exists"
+    },
+    {
+      "id": "VER009",
+      "category": "treats",
+      "input": "Insulin treats diabetes mellitus",
+      "expected_status": "SUPPORTED",
+      "expected_relationship": "TREATS"
+    },
+    {
+      "id": "VER010",
+      "category": "interaction",
+      "input": "Metformin and Glipizide together for diabetes",
+      "expected_status": "SUPPORTED",
+      "expected_relationship": "TREATS"
+    },
+    {
+      "id": "VER011",
+      "category": "treats",
+      "input": "Losartan treats hypertension",
+      "expected_status": "SUPPORTED",
+      "expected_relationship": "TREATS"
+    },
+    {
+      "id": "VER012",
+      "category": "treats",
+      "input": "Prednisone treats autoimmune disease",
+      "expected_status": "SUPPORTED",
+      "expected_relationship": "TREATS"
+    },
+    {
+      "id": "VER013",
+      "category": "treats",
+      "input": "Omeprazole treats peptic ulcer",
+      "expected_status": "SUPPORTED",
+      "expected_relationship": "TREATS"
+    },
+    {
+      "id": "VER014",
+      "category": "treats",
+      "input": "Amoxicillin treats streptococcal infection",
+      "expected_status": "SUPPORTED",
+      "expected_relationship": "TREATS"
+    },
+    {
+      "id": "VER015",
+      "category": "fake_entities",
+      "input": "XYZdrug treats ABCdisease",
+      "expected_status": "UNKNOWN",
+      "expected_relationship": null
+    }
+  ]
+}
