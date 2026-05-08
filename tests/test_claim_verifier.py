@@ -53,9 +53,9 @@ class TestClaimVerifier:
     @pytest.mark.asyncio
     async def test_normalize_name_handles_type_pattern(self):
         """Test name normalization for type patterns"""
-        mock_medcat = MagicMock()
+        mock_extractor = MagicMock()
         mock_kg = MagicMock()
-        verifier = ClaimVerifier(mock_medcat, mock_kg)
+        verifier = ClaimVerifier(mock_extractor, mock_kg)
 
         # Test "diabetes type 2" -> "type 2 diabetes"
         normalized = verifier._normalize_name("diabetes type 2")
@@ -65,9 +65,9 @@ class TestClaimVerifier:
     @pytest.mark.asyncio
     async def test_normalize_name_removes_suffixes(self):
         """Test that common suffixes are removed"""
-        mock_medcat = MagicMock()
+        mock_extractor = MagicMock()
         mock_kg = MagicMock()
-        verifier = ClaimVerifier(mock_medcat, mock_kg)
+        verifier = ClaimVerifier(mock_extractor, mock_kg)
 
         normalized = verifier._normalize_name("Metformin hydrochloride")
         assert "hydrochloride" not in normalized
@@ -76,8 +76,8 @@ class TestClaimVerifier:
     @pytest.mark.asyncio
     async def test_get_search_term_prefers_text(self, mock_kg_service):
         """Test that search term prefers entity.text over entity.name"""
-        mock_medcat = MagicMock()
-        verifier = ClaimVerifier(mock_medcat, mock_kg_service)
+        mock_extractor = MagicMock()
+        verifier = ClaimVerifier(mock_extractor, mock_kg_service)
 
         entity = Entity(
             text="Hypertension",
@@ -97,6 +97,8 @@ class TestClaimVerifier:
     @pytest.mark.asyncio
     async def test_confidence_calculation(self, mock_kg_service):
         """Test confidence score calculation"""
+        from src.services.claim_triple_extractor import ClaimTriple
+
         mock_gliner = MagicMock()
         verifier = ClaimVerifier(mock_gliner, mock_kg_service)
 
@@ -109,9 +111,13 @@ class TestClaimVerifier:
             confidence=0.8, start=10, end=18, negated=False
         )
 
+        triple = ClaimTriple(
+            subject=entity1, predicate="TREATS", object=entity2,
+            asserted=True, confidence=0.85, source="rules", snippet="treats"
+        )
         kg_result = {"found": True, "evidence": [{"drug": "Drug1", "disease": "Disease1"}]}
 
-        confidence = verifier._calculate_confidence(entity1, entity2, kg_result)
+        confidence = verifier._calculate_confidence(triple, kg_result)
 
         assert 0 <= confidence <= 1
         assert confidence > 0.5  # Should be reasonably confident with evidence

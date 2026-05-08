@@ -1,322 +1,532 @@
 """
 Claim Verifier Service
-Core verification logic that combines GLiNER entities with Neo4j knowledge graph
+
+Triple-driven verification:
+  1. GLiNER extracts entities.
+  2. ClaimTripleExtractor produces (subject, predicate, object, asserted)
+     triples by reading the verb/intent phrase between each entity pair.
+  3. For each triple we verify the SPECIFIC asserted relation against the
+     knowledge graph, with two enrichments:
+       - Drug names get a lazy RxNorm cascade (brand → generic ingredients).
+       - We also probe the "opposite" relation so we can mark a verdict as
+         CONTRADICTED when the KG provides the inverse of what the user said.
 """
 
-from typing import List
+from typing import Awaitable, Callable, List, Optional
 from loguru import logger
 
 from src.models.responses import (
     Entity,
     Evidence,
     ClaimVerification,
-    VerificationStatus
+    VerificationStatus,
 )
 from src.services.gliner_client import GLiNERClient, get_gliner_client
-from src.services.knowledge_graph import KnowledgeGraphService, get_knowledge_graph_service
+from src.services.knowledge_graph import (
+    KnowledgeGraphService,
+    get_knowledge_graph_service,
+)
+from src.services.drug_normalizer import DrugNormalizer, get_drug_normalizer
+from src.services.claim_triple_extractor import (
+    ClaimTriple,
+    ClaimTripleExtractor,
+    get_claim_triple_extractor,
+)
+
+
+# Pretty verb fragments per predicate, used when rendering the user-facing claim
+_VERB_TEMPLATES: dict[str, str] = {
+    "TREATS": "treats",
+    "CAUSES_SIDE_EFFECT": "may cause",
+    "CONTRAINDICATED_FOR": "is contraindicated for",
+    "INTERACTS_WITH": "interacts with",
+    "HAS_SYMPTOM": "presents with",
+}
+
+# Pre-conjugated negated forms (avoids brittle string surgery on "treats" -> "treat")
+_NEGATED_VERB_TEMPLATES: dict[str, str] = {
+    "TREATS": "does not treat",
+    "CAUSES_SIDE_EFFECT": "does not cause",
+    "CONTRAINDICATED_FOR": "is not contraindicated for",
+    "INTERACTS_WITH": "does not interact with",
+    "HAS_SYMPTOM": "does not present with",
+}
 
 
 class ClaimVerifier:
-    """
-    Verifies medical claims by:
-    1. Extracting entities from text using GLiNER (zero-shot NER)
-    2. Checking relationships in Neo4j knowledge graph
-    3. Returning structured verification results
-    """
+    """Triple-driven medical claim verifier."""
 
     def __init__(
         self,
         entity_extractor: GLiNERClient = None,
-        kg_service: KnowledgeGraphService = None
+        kg_service: KnowledgeGraphService = None,
+        drug_normalizer: DrugNormalizer = None,
+        triple_extractor: ClaimTripleExtractor = None,
     ):
         self.extractor = entity_extractor or get_gliner_client()
         self.kg = kg_service or get_knowledge_graph_service()
-    
+        self.drug_normalizer = drug_normalizer or get_drug_normalizer()
+        self.triple_extractor = triple_extractor or get_claim_triple_extractor()
+
+    # =====================================================================
+    # Public entry point
+    # =====================================================================
+
     async def verify_text(self, text: str) -> List[ClaimVerification]:
-        """
-        Verify medical claims in text
-
-        Args:
-            text: Medical text to verify
-
-        Returns:
-            List of ClaimVerification objects
-        """
-        # Step 1: Extract entities using GLiNER
         logger.info(f"Verifying text: {text[:100]}...")
+
         entities = await self.extractor.extract_entities(text)
 
         if not entities:
-            logger.warning("No entities extracted from text")
             return [ClaimVerification(
                 claim="No medical entities detected",
                 status=VerificationStatus.UNKNOWN,
                 confidence=0.0,
                 entities=[],
-                evidence=[]
+                evidence=[],
             )]
 
-        # Step 2: Group entities by type (GLiNER provides types directly - no inference needed)
-        drugs = [e for e in entities if e.type == "Drug" and not e.negated]
-        diseases = [e for e in entities if e.type == "Disease" and not e.negated]
-        symptoms = [e for e in entities if e.type == "Symptom" and not e.negated]
+        triples = await self.triple_extractor.extract(text, entities)
 
-        logger.info(f"Found: {len(drugs)} drugs, {len(diseases)} diseases, {len(symptoms)} symptoms")
-
-        # Step 4: Verify relationships
-        verifications = []
-
-        # Check drug-disease relationships
-        for drug in drugs:
-            for disease in diseases:
-                verification = await self._verify_drug_disease(drug, disease)
-                if verification:
-                    verifications.append(verification)
-
-        # Check drug-symptom relationships (side effects)
-        for drug in drugs:
-            for symptom in symptoms:
-                verification = await self._verify_drug_side_effect(drug, symptom)
-                if verification:
-                    verifications.append(verification)
-
-        # Check disease-symptom relationships
-        for disease in diseases:
-            for symptom in symptoms:
-                verification = await self._verify_disease_symptom(disease, symptom)
-                if verification:
-                    verifications.append(verification)
-
-        # Check drug-drug interactions
-        if len(drugs) >= 2:
-            for i, drug1 in enumerate(drugs):
-                for drug2 in drugs[i+1:]:
-                    verification = await self._verify_drug_interaction(drug1, drug2)
-                    if verification:
-                        verifications.append(verification)
-        
-        # If no specific claims verified, return entity summary
-        if not verifications and entities:
-            verifications.append(ClaimVerification(
-                claim="Medical entities detected but no specific relationships verified",
+        if not triples:
+            # Entities were recognised but no relationship was asserted — emit a
+            # single PARTIAL summary rather than fabricating verdicts.
+            return [ClaimVerification(
+                claim="Medical entities detected but no specific relationship asserted",
                 status=VerificationStatus.PARTIAL,
                 confidence=0.5,
                 entities=entities,
-                evidence=[]
-            ))
-        
-        return verifications
-    
-    async def _verify_drug_disease(self, drug: Entity, disease: Entity) -> ClaimVerification:
-        """Verify drug-disease relationship (TREATS or CONTRAINDICATED)"""
+                evidence=[],
+            )]
 
-        # Use original text for better Neo4j matching
-        drug_name = self._get_search_term(drug)
-        disease_name = self._get_search_term(disease)
+        verifications: List[ClaimVerification] = []
+        for triple in triples:
+            v = await self._verify_triple(text, triple)
+            if v is not None:
+                verifications.append(v)
 
-        # First check if drug treats disease
-        treats_result = await self.kg.check_drug_treats_disease(drug_name, disease_name)
-        
-        if treats_result["found"]:
-            evidence = [
-                Evidence(
-                    source="PrimeKG",
-                    relationship="TREATS",
-                    subject=e.get("drug", drug.name),
-                    object=e.get("disease", disease.name)
-                )
-                for e in treats_result["evidence"][:3]
-            ]
-            
-            return ClaimVerification(
-                claim=f"{drug.name} treats {disease.name}",
-                status=VerificationStatus.SUPPORTED,
-                confidence=self._calculate_confidence(drug, disease, treats_result),
-                entities=[drug, disease],
-                evidence=evidence
-            )
-        
-        # Check if contraindicated
-        contra_result = await self.kg.check_contraindication(drug_name, disease_name)
-        
-        if contra_result["found"]:
-            evidence = [
-                Evidence(
-                    source="PrimeKG",
-                    relationship="CONTRAINDICATED_FOR",
-                    subject=e.get("drug", drug.name),
-                    object=e.get("condition", disease.name)
-                )
-                for e in contra_result["evidence"][:3]
-            ]
-            
-            return ClaimVerification(
-                claim=f"{drug.name} for {disease.name}",
-                status=VerificationStatus.CONTRADICTED,
-                confidence=self._calculate_confidence(drug, disease, contra_result),
-                entities=[drug, disease],
-                evidence=evidence
-            )
-        
-        # No relationship found
-        return ClaimVerification(
-            claim=f"{drug.name} - {disease.name} relationship",
-            status=VerificationStatus.NOT_FOUND,
-            confidence=0.3,
-            entities=[drug, disease],
-            evidence=[]
+        return verifications or [ClaimVerification(
+            claim="Medical entities detected but no specific relationship verified",
+            status=VerificationStatus.PARTIAL,
+            confidence=0.5,
+            entities=entities,
+            evidence=[],
+        )]
+
+    # =====================================================================
+    # Triple verification — dispatch + opposite-relation contradiction logic
+    # =====================================================================
+
+    async def _verify_triple(self, text: str, t: ClaimTriple) -> Optional[ClaimVerification]:
+        """
+        Verify a single ClaimTriple against the knowledge graph. Always probes
+        the asserted relation first; on miss, probes the relevant "opposite"
+        relation so we can label CONTRADICTED.
+        """
+        pred = t.predicate
+        if pred == "TREATS":
+            return await self._verify_treats(t)
+        if pred == "CONTRAINDICATED_FOR":
+            return await self._verify_contraindicated(t)
+        if pred == "CAUSES_SIDE_EFFECT":
+            return await self._verify_side_effect(t)
+        if pred == "INTERACTS_WITH":
+            return await self._verify_interaction(t)
+        if pred == "HAS_SYMPTOM":
+            return await self._verify_symptom(t)
+        return None  # unknown predicate, skip
+
+    # ---- TREATS ----
+
+    async def _verify_treats(self, t: ClaimTriple) -> ClaimVerification:
+        """User asserted: <drug> TREATS <disease/symptom>."""
+        disease_name = self._get_search_term(t.object)
+
+        # Direct probe
+        result, used_drug = await self._query_with_drug_fallback(
+            t.subject, lambda d: self.kg.check_drug_treats_disease(d, disease_name)
         )
-    
-    async def _verify_drug_side_effect(self, drug: Entity, symptom: Entity) -> ClaimVerification:
-        """Verify if drug causes a side effect"""
-
-        drug_name = self._get_search_term(drug)
-        symptom_name = self._get_search_term(symptom)
-        result = await self.kg.check_side_effect(drug_name, symptom_name)
-        
         if result["found"]:
-            evidence = [
-                Evidence(
-                    source="PrimeKG",
-                    relationship="CAUSES_SIDE_EFFECT",
-                    subject=e.get("drug", drug.name),
-                    object=e.get("effect", symptom.name)
-                )
-                for e in result["evidence"][:3]
-            ]
-            
-            return ClaimVerification(
-                claim=f"{drug.name} may cause {symptom.name}",
-                status=VerificationStatus.SUPPORTED,
-                confidence=self._calculate_confidence(drug, symptom, result),
-                entities=[drug, symptom],
-                evidence=evidence
+            return self._make_verdict(
+                triple=t,
+                status=self._status_from_assertion(found=True, asserted=t.asserted, predicate_inverted=False),
+                kg_result=result,
+                kg_predicate="TREATS",
+                used_drug=used_drug,
+                relationship_label="TREATS",
+                subj_key="drug", obj_key="disease",
             )
-        
-        return None  # Don't report NOT_FOUND for side effects
-    
-    async def _verify_disease_symptom(self, disease: Entity, symptom: Entity) -> ClaimVerification:
-        """Verify if disease has a symptom"""
 
-        disease_name = self._get_search_term(disease)
-        symptom_name = self._get_search_term(symptom)
-        result = await self.kg.check_disease_symptom(disease_name, symptom_name)
-        
-        if result["found"]:
-            evidence = [
-                Evidence(
-                    source="PrimeKG",
-                    relationship="HAS_SYMPTOM",
-                    subject=e.get("disease", disease.name),
-                    object=e.get("symptom", symptom.name)
-                )
-                for e in result["evidence"][:3]
-            ]
-            
-            return ClaimVerification(
-                claim=f"{disease.name} presents with {symptom.name}",
-                status=VerificationStatus.SUPPORTED,
-                confidence=self._calculate_confidence(disease, symptom, result),
-                entities=[disease, symptom],
-                evidence=evidence
+        # Opposite probes for contradiction signalling
+        contra, used_drug2 = await self._query_with_drug_fallback(
+            t.subject, lambda d: self.kg.check_contraindication(d, disease_name)
+        )
+        if contra["found"]:
+            status = self._status_for_opposite(t.asserted)
+            explanation = (
+                f"You asserted that {t.subject.text} treats {t.object.text}, but the "
+                f"clinical evidence indicates this combination is contraindicated."
+                if t.asserted else
+                f"No treatment relationship found, which is consistent with the denial. "
+                f"For context: {t.subject.text} is recorded as contraindicated for "
+                f"{t.object.text}."
             )
-        
-        return None  # Don't report NOT_FOUND for symptoms
-    
-    async def _verify_drug_interaction(self, drug1: Entity, drug2: Entity) -> ClaimVerification:
-        """Verify if two drugs interact"""
+            return self._make_verdict(
+                triple=t,
+                status=status,
+                kg_result=contra,
+                kg_predicate="CONTRAINDICATED_FOR",
+                used_drug=used_drug2,
+                relationship_label="CONTRAINDICATED_FOR",
+                subj_key="drug", obj_key="condition",
+                explanation=explanation,
+            )
 
-        drug1_name = self._get_search_term(drug1)
-        drug2_name = self._get_search_term(drug2)
-        result = await self.kg.check_drug_interaction(drug1_name, drug2_name)
-        
-        if result["found"]:
-            evidence = [
-                Evidence(
-                    source="PrimeKG",
-                    relationship="INTERACTS_WITH",
-                    subject=e.get("drug1", drug1.name),
-                    object=e.get("drug2", drug2.name)
-                )
-                for e in result["evidence"][:3]
-            ]
-            
-            return ClaimVerification(
-                claim=f"{drug1.name} interacts with {drug2.name}",
-                status=VerificationStatus.SUPPORTED,
-                confidence=self._calculate_confidence(drug1, drug2, result),
-                entities=[drug1, drug2],
-                evidence=evidence
+        # If the object was tagged as a Symptom, the KG may only have it as an
+        # Effect node — in that case the inverse "drug causes effect" lookup
+        # detects a contradiction.
+        if t.object.type in {"Symptom", "Effect"}:
+            side, used_drug3 = await self._query_with_drug_fallback(
+                t.subject, lambda d: self.kg.check_side_effect(d, disease_name)
             )
-        
-        return None  # Don't report NOT_FOUND for interactions
-    
+            if side["found"]:
+                status = self._status_for_opposite(t.asserted)
+                explanation = (
+                    f"You asserted that {t.subject.text} treats {t.object.text}, but "
+                    f"clinical evidence records {t.object.text} as a side effect of "
+                    f"{used_drug3 or t.subject.text}, not as something it treats."
+                    if t.asserted else
+                    f"No treatment relationship found, which is consistent with the denial. "
+                    f"For context: {t.object.text} is recorded as a side effect of "
+                    f"{used_drug3 or t.subject.text}."
+                )
+                return self._make_verdict(
+                    triple=t,
+                    status=status,
+                    kg_result=side,
+                    kg_predicate="CAUSES_SIDE_EFFECT",
+                    used_drug=used_drug3,
+                    relationship_label="CAUSES_SIDE_EFFECT",
+                    subj_key="drug", obj_key="effect",
+                    explanation=explanation,
+                )
+
+        return self._not_found(t)
+
+    # ---- CONTRAINDICATED_FOR ----
+
+    async def _verify_contraindicated(self, t: ClaimTriple) -> ClaimVerification:
+        """User asserted: <drug> is contraindicated in <condition>."""
+        cond_name = self._get_search_term(t.object)
+        result, used_drug = await self._query_with_drug_fallback(
+            t.subject, lambda d: self.kg.check_contraindication(d, cond_name)
+        )
+        if result["found"]:
+            return self._make_verdict(
+                triple=t,
+                status=self._status_from_assertion(True, t.asserted, False),
+                kg_result=result, kg_predicate="CONTRAINDICATED_FOR",
+                used_drug=used_drug,
+                relationship_label="CONTRAINDICATED_FOR",
+                subj_key="drug", obj_key="condition",
+            )
+
+        # Opposite: KG has TREATS → user wrong
+        treats, used_drug2 = await self._query_with_drug_fallback(
+            t.subject, lambda d: self.kg.check_drug_treats_disease(d, cond_name)
+        )
+        if treats["found"]:
+            status = self._status_for_opposite(t.asserted)
+            explanation = (
+                f"You asserted that {t.subject.text} is contraindicated in "
+                f"{t.object.text}, but clinical evidence shows it is in fact used to treat it."
+                if t.asserted else
+                f"No contraindication on record, which is consistent with the denial. "
+                f"For context: {t.subject.text} is used to treat {t.object.text}."
+            )
+            return self._make_verdict(
+                triple=t, status=status,
+                kg_result=treats, kg_predicate="TREATS",
+                used_drug=used_drug2,
+                relationship_label="TREATS",
+                subj_key="drug", obj_key="disease",
+                explanation=explanation,
+            )
+        return self._not_found(t)
+
+    # ---- CAUSES_SIDE_EFFECT ----
+
+    async def _verify_side_effect(self, t: ClaimTriple) -> ClaimVerification:
+        """User asserted: <drug> causes <symptom/effect>."""
+        eff_name = self._get_search_term(t.object)
+        result, used_drug = await self._query_with_drug_fallback(
+            t.subject, lambda d: self.kg.check_side_effect(d, eff_name)
+        )
+        if result["found"]:
+            return self._make_verdict(
+                triple=t, status=self._status_from_assertion(True, t.asserted, False),
+                kg_result=result, kg_predicate="CAUSES_SIDE_EFFECT",
+                used_drug=used_drug,
+                relationship_label="CAUSES_SIDE_EFFECT",
+                subj_key="drug", obj_key="effect",
+            )
+
+        # Opposite: KG has TREATS → user wrong (drug treats it, doesn't cause it)
+        treats, used_drug2 = await self._query_with_drug_fallback(
+            t.subject, lambda d: self.kg.check_drug_treats_disease(d, eff_name)
+        )
+        if treats["found"]:
+            status = self._status_for_opposite(t.asserted)
+            explanation = (
+                f"You asserted that {t.subject.text} causes {t.object.text}, but "
+                f"clinical evidence shows it is used to treat {t.object.text}."
+                if t.asserted else
+                f"No causal relationship on record, which is consistent with the denial. "
+                f"For context: {t.subject.text} is used to treat {t.object.text}."
+            )
+            return self._make_verdict(
+                triple=t, status=status,
+                kg_result=treats, kg_predicate="TREATS",
+                used_drug=used_drug2,
+                relationship_label="TREATS",
+                subj_key="drug", obj_key="disease",
+                explanation=explanation,
+            )
+        return self._not_found(t)
+
+    # ---- INTERACTS_WITH ----
+
+    async def _verify_interaction(self, t: ClaimTriple) -> ClaimVerification:
+        """User asserted: <drug A> interacts with <drug B>. Cascade on both."""
+        async def query(d1: str, d2: str):
+            return await self.kg.check_drug_interaction(d1, d2)
+
+        primary1 = self._get_search_term(t.subject)
+        primary2 = self._get_search_term(t.object)
+        result = await query(primary1, primary2)
+        used1, used2 = primary1, primary2
+
+        if not result["found"]:
+            await self._normalize_drug(t.subject)
+            await self._normalize_drug(t.object)
+            cands1 = [primary1] + [c for c in self._extra_drug_candidates(t.subject, primary1)]
+            cands2 = [primary2] + [c for c in self._extra_drug_candidates(t.object, primary2)]
+            for c1 in cands1:
+                for c2 in cands2:
+                    if c1 == primary1 and c2 == primary2:
+                        continue
+                    r = await query(c1, c2)
+                    if r["found"]:
+                        result, used1, used2 = r, c1, c2
+                        break
+                if result["found"]:
+                    break
+
+        if result["found"]:
+            return self._make_verdict(
+                triple=t,
+                status=self._status_from_assertion(True, t.asserted, False),
+                kg_result=result, kg_predicate="INTERACTS_WITH",
+                used_drug=used1,
+                relationship_label="INTERACTS_WITH",
+                subj_key="drug1", obj_key="drug2",
+                used_object=used2,
+            )
+        return self._not_found(t)
+
+    # ---- HAS_SYMPTOM ----
+
+    async def _verify_symptom(self, t: ClaimTriple) -> ClaimVerification:
+        """User asserted: <disease> presents with <symptom>."""
+        dis = self._get_search_term(t.subject)
+        sym = self._get_search_term(t.object)
+        result = await self.kg.check_disease_symptom(dis, sym)
+        if result["found"]:
+            return self._make_verdict(
+                triple=t,
+                status=self._status_from_assertion(True, t.asserted, False),
+                kg_result=result, kg_predicate="HAS_SYMPTOM",
+                used_drug=None,
+                relationship_label="HAS_SYMPTOM",
+                subj_key="disease", obj_key="symptom",
+            )
+        return self._not_found(t)
+
+    # =====================================================================
+    # Helpers — drug normalization, search-term selection, verdict assembly
+    # =====================================================================
+
+    async def _normalize_drug(self, drug: Entity) -> None:
+        if drug.normalization_source is not None or drug.normalized_name is not None:
+            return
+        if not (drug.text or drug.name):
+            return
+        nd = await self.drug_normalizer.normalize(drug.text or drug.name)
+        if nd.canonical:
+            drug.normalized_name = nd.canonical
+            drug.normalized_ingredients = nd.ingredients
+            drug.normalization_source = nd.source
+            drug.normalization_score = nd.score
+            drug.normalization_id = nd.rxcui
+
+    def _extra_drug_candidates(self, drug: Entity, primary: str) -> list[str]:
+        cands: list[str] = []
+        for c in (drug.normalized_ingredients or
+                  ([drug.normalized_name] if drug.normalized_name else [])):
+            if c and c != primary and c not in cands:
+                cands.append(c)
+        return cands
+
+    async def _query_with_drug_fallback(
+        self,
+        drug: Entity,
+        query_fn: Callable[[str], Awaitable[dict]],
+    ):
+        """Try original; on miss, lazily resolve via RxNorm and retry per ingredient."""
+        primary = self._get_search_term(drug)
+        result = await query_fn(primary)
+        if result["found"]:
+            return result, primary
+
+        await self._normalize_drug(drug)
+        for cand in self._extra_drug_candidates(drug, primary):
+            r = await query_fn(cand)
+            if r["found"]:
+                return r, cand
+        return result, primary
+
     def _get_search_term(self, entity: Entity) -> str:
-        """
-        Get the best search term for Neo4j lookup.
-
-        Prefers entity.text (original input words) over entity.name (canonical SNOMED name)
-        because original text matches Neo4j's normalized names much better.
-
-        Example:
-        - entity.text = "Hypertension" (matches Neo4j)
-        - entity.name = "Hypertensive disorder, systemic arterial" (doesn't match)
-        """
-        # Prefer original text, fall back to canonical name
         search_term = entity.text if entity.text else entity.name
         return self._normalize_name(search_term)
 
-    def _normalize_name(self, name: str) -> str:
-        """
-        Normalize entity name for better Neo4j matching.
-
-        Handles cases like:
-        - "Diabetes mellitus type 2" -> "type 2 diabetes"
-        - "Metformin hydrochloride" -> "metformin"
-        """
-        name_lower = name.lower().strip()
-
-        # Remove common suffixes that don't affect matching
-        for suffix in [" hydrochloride", " sodium", " (disease)", " mellitus"]:
-            name_lower = name_lower.replace(suffix, "")
-
-        # For "X type N" patterns, try to reorder to "type N X"
+    @staticmethod
+    def _normalize_name(name: str) -> str:
         import re
-        # Match patterns like "diabetes type 2" -> "type 2 diabetes"
-        type_match = re.match(r"(.+?)\s+type\s+(\d+)$", name_lower)
-        if type_match:
-            base_name, type_num = type_match.groups()
-            return f"type {type_num} {base_name}".strip()
+        n = (name or "").lower().strip()
+        for suffix in [" hydrochloride", " sodium", " (disease)", " mellitus"]:
+            n = n.replace(suffix, "")
+        m = re.match(r"(.+?)\s+type\s+(\d+)$", n)
+        if m:
+            base, num = m.groups()
+            return f"type {num} {base}".strip()
+        return n.strip()
 
-        return name_lower.strip()
+    @staticmethod
+    def _status_for_opposite(asserted: bool) -> VerificationStatus:
+        """
+        We didn't find the asserted relation, but we did find an opposite one.
+          - asserted=True  -> CONTRADICTED (user said X, KG says opposite of X)
+          - asserted=False -> SUPPORTED    (user denied X; X is absent;
+                                            the opposite is informational only)
+        """
+        return VerificationStatus.CONTRADICTED if asserted else VerificationStatus.SUPPORTED
 
-    def _calculate_confidence(
+    @staticmethod
+    def _status_from_assertion(found: bool, asserted: bool, predicate_inverted: bool) -> VerificationStatus:
+        """
+        Decision matrix for direct (non-opposite) findings:
+          - asserted=True  & found=True  -> SUPPORTED
+          - asserted=True  & found=False -> NOT_FOUND  (caller may then probe opposite)
+          - asserted=False & found=True  -> CONTRADICTED  (user denied, KG affirms)
+          - asserted=False & found=False -> SUPPORTED    (absence is what user said)
+        """
+        if found and asserted:
+            return VerificationStatus.SUPPORTED
+        if found and not asserted:
+            return VerificationStatus.CONTRADICTED
+        if not found and not asserted:
+            return VerificationStatus.SUPPORTED
+        return VerificationStatus.NOT_FOUND
+
+    def _claim_subject(self, drug: Entity, used: Optional[str]) -> str:
+        if used and used.lower() != (drug.text or drug.name).lower():
+            return f"{drug.name} ({used})"
+        return drug.name
+
+    def _render_claim(self, t: ClaimTriple, used_subj: Optional[str] = None,
+                      used_obj: Optional[str] = None) -> str:
+        if t.asserted:
+            verb = _VERB_TEMPLATES.get(t.predicate, t.predicate.lower().replace("_", " "))
+        else:
+            verb = _NEGATED_VERB_TEMPLATES.get(
+                t.predicate, f"does not {_VERB_TEMPLATES.get(t.predicate, t.predicate.lower())}"
+            )
+        subj = self._claim_subject(t.subject, used_subj)
+        obj = self._claim_subject(t.object, used_obj) if used_obj else t.object.name
+        return f"{subj} {verb} {obj}"
+
+    def _make_verdict(
         self,
-        entity1: Entity,
-        entity2: Entity,
-        kg_result: dict
-    ) -> float:
-        """
-        Calculate overall confidence score
-        
-        Combines:
-        - Entity extraction confidence
-        - Number of evidence items found
-        """
-        # Average entity confidence
-        entity_conf = (entity1.confidence + entity2.confidence) / 2
-        
-        # Evidence factor (more evidence = higher confidence)
-        evidence_count = len(kg_result.get("evidence", []))
-        evidence_factor = min(evidence_count / 3, 1.0)  # Cap at 3 pieces of evidence
-        
-        # Weighted combination
-        confidence = (entity_conf * 0.6) + (evidence_factor * 0.4)
-        
-        return round(min(confidence, 1.0), 2)
+        triple: ClaimTriple,
+        status: VerificationStatus,
+        kg_result: dict,
+        kg_predicate: str,
+        used_drug: Optional[str],
+        relationship_label: str,
+        subj_key: str,
+        obj_key: str,
+        used_object: Optional[str] = None,
+        explanation: Optional[str] = None,
+    ) -> ClaimVerification:
+        evidence = [
+            Evidence(
+                source="OptimusKG",
+                relationship=relationship_label,
+                subject=e.get(subj_key, triple.subject.name),
+                object=e.get(obj_key, triple.object.name),
+            )
+            for e in kg_result.get("evidence", [])[:3]
+        ]
+        return ClaimVerification(
+            claim=self._render_claim(triple, used_subj=used_drug, used_obj=used_object),
+            status=status,
+            confidence=self._calculate_confidence(triple, kg_result),
+            entities=[triple.subject, triple.object],
+            evidence=evidence,
+            asserted_predicate=triple.predicate,
+            evidence_predicate=kg_predicate,
+            negated=not triple.asserted,
+            explanation=explanation,
+        )
+
+    def _not_found(self, t: ClaimTriple) -> ClaimVerification:
+        # If the user negated the claim, the absence of an edge in the graph
+        # CONFIRMS the denial — that's SUPPORTED, not NOT_FOUND.
+        if not t.asserted:
+            return ClaimVerification(
+                claim=self._render_claim(t),
+                status=VerificationStatus.SUPPORTED,
+                confidence=0.6,
+                entities=[t.subject, t.object],
+                evidence=[],
+                asserted_predicate=t.predicate,
+                evidence_predicate=None,
+                negated=True,
+                explanation=(
+                    f"No {t.predicate.lower().replace('_', ' ')} relationship between "
+                    f"{t.subject.text} and {t.object.text} is on record, "
+                    f"which is consistent with the assertion."
+                ),
+            )
+        return ClaimVerification(
+            claim=self._render_claim(t),
+            status=VerificationStatus.NOT_FOUND,
+            confidence=0.3,
+            entities=[t.subject, t.object],
+            evidence=[],
+            asserted_predicate=t.predicate,
+            evidence_predicate=None,
+            negated=False,
+        )
+
+    def _calculate_confidence(self, t: ClaimTriple, kg_result: dict) -> float:
+        # Mix entity confidence, predicate confidence, and evidence count.
+        entity_conf = (t.subject.confidence + t.object.confidence) / 2
+        evidence_factor = min(len(kg_result.get("evidence", [])) / 3, 1.0)
+        combined = 0.45 * entity_conf + 0.30 * t.confidence + 0.25 * evidence_factor
+        return round(min(combined, 1.0), 2)
 
 
 # Factory function
 def get_claim_verifier() -> ClaimVerifier:
-    """Get claim verifier instance"""
     return ClaimVerifier()

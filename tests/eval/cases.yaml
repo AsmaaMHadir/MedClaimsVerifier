@@ -1,0 +1,824 @@
+# MedVerify evaluation set
+# =============================================================================
+# Truth model: clinical reality. Cases known to fail because PrimeKG lacks
+# a particular alias / edge are tagged `data_gap` so the runner reports two
+# numbers — raw accuracy (clinical truth) and system accuracy (excluding
+# data_gap rows). The delta is the headroom for SapBERT + PubMed mining.
+#
+# Each case has:
+#   id                   stable identifier
+#   text                 the input the user types
+#   expected.verdict     SUPPORTED | CONTRADICTED | NOT_FOUND | PARTIAL | UNKNOWN
+#   expected.asserted_predicate
+#   expected.negated     true if user is denying the relation
+#   expected.evidence_predicate (optional) what the KG should hold
+#   tags                 bucket + flags (brand_drug, lay_term, data_gap, negation, contradiction, multi_claim)
+#   notes                human context
+#
+# Negation semantics:
+#   asserted=True  + KG has it     -> SUPPORTED
+#   asserted=True  + KG missing    -> NOT_FOUND
+#   asserted=False + KG has it     -> CONTRADICTED  (user denied a real edge)
+#   asserted=False + KG missing    -> SUPPORTED     (absence agrees with denial)
+
+# =============================================================================
+# TREATS — SUPPORTED (10 cases; includes 3 brand-drug + 2 lay-term overlaps)
+# =============================================================================
+
+- id: TREATS_SUPP_001
+  text: "Metformin treats Type 2 Diabetes"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: TREATS
+  tags: [treats_supported]
+  notes: First-line therapy for T2D
+
+- id: TREATS_SUPP_002
+  text: "Lisinopril is used for hypertension"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: TREATS
+  tags: [treats_supported]
+  notes: Standard ACE inhibitor indication
+
+- id: TREATS_SUPP_003
+  text: "Warfarin treats thrombotic disease"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: TREATS
+  tags: [treats_supported]
+
+- id: TREATS_SUPP_004
+  text: "Atorvastatin treats hypertriglyceridemia"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: TREATS
+  tags: [treats_supported, data_gap]
+
+- id: TREATS_SUPP_005
+  text: "Insulin treats diabetes mellitus"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: TREATS
+  tags: [treats_supported]
+
+- id: TREATS_SUPP_006
+  text: "Amoxicillin treats streptococcal infection"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: TREATS
+  tags: [treats_supported]
+
+- id: TREATS_SUPP_007
+  text: "Tylenol treats headache"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: TREATS
+  tags: [treats_supported, brand_drug]
+  notes: Tests RxNorm cascade (Tylenol -> acetaminophen)
+
+- id: TREATS_SUPP_008
+  text: "Lipitor for hyperlipidemia"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: TREATS
+  tags: [treats_supported, brand_drug]
+  notes: Tests RxNorm + weak "for" predicate
+
+- id: TREATS_SUPP_009
+  text: "Advil is used for inflammation"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: TREATS
+  tags: [treats_supported, brand_drug]
+  notes: Advil -> ibuprofen via RxNorm
+
+- id: TREATS_SUPP_010
+  text: "High blood pressure is treated with lisinopril"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: TREATS
+  tags: [treats_supported, lay_term, data_gap]
+  notes: "'high blood pressure' is lay; PrimeKG canonical is 'hypertension'. SapBERT target."
+
+# =============================================================================
+# TREATS — NOT_FOUND (6 cases): entities recognized, no edge anywhere
+# =============================================================================
+
+- id: TREATS_NF_001
+  text: "Aspirin treats peptic ulcer disease"
+  expected:
+    verdict: NOT_FOUND
+    asserted_predicate: TREATS
+    negated: false
+  tags: [treats_not_found]
+  notes: Aspirin doesn't treat ulcers (it can cause them, but no inverse edge in PrimeKG)
+
+- id: TREATS_NF_002
+  text: "Cetirizine treats migraine"
+  expected:
+    verdict: NOT_FOUND
+    asserted_predicate: TREATS
+    negated: false
+  tags: [treats_not_found]
+  notes: Antihistamine is not a migraine treatment
+
+- id: TREATS_NF_003
+  text: "Loratadine treats stroke"
+  expected:
+    verdict: NOT_FOUND
+    asserted_predicate: TREATS
+    negated: false
+  tags: [treats_not_found]
+
+- id: TREATS_NF_004
+  text: "Omeprazole treats arthritis"
+  expected:
+    verdict: NOT_FOUND
+    asserted_predicate: TREATS
+    negated: false
+  tags: [treats_not_found]
+  notes: PPI is unrelated to arthritis
+
+- id: TREATS_NF_005
+  text: "Penicillin treats viral infection"
+  expected:
+    verdict: NOT_FOUND
+    asserted_predicate: TREATS
+    negated: false
+  tags: [treats_not_found]
+  notes: Antibiotic, not antiviral
+
+- id: TREATS_NF_006
+  text: "Vitamin C treats COVID-19"
+  expected:
+    verdict: NOT_FOUND
+    asserted_predicate: TREATS
+    negated: false
+  tags: [treats_not_found]
+  notes: Folk-belief, no clinical evidence in PrimeKG
+
+# =============================================================================
+# TREATS — CONTRADICTED (6 cases): user says treats, KG has CAUSES or CONTRA
+# =============================================================================
+
+- id: TREATS_CONTRA_001
+  text: "Atorvastatin treats muscle pain"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: CAUSES_SIDE_EFFECT
+  tags: [treats_contradicted, contradiction, data_gap]
+  notes: Statins are a known cause of muscle pain (myopathy)
+
+- id: TREATS_CONTRA_002
+  text: "Aspirin treats stomach bleeding"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: CAUSES_SIDE_EFFECT
+  tags: [treats_contradicted, contradiction, data_gap]
+  notes: Aspirin causes GI bleeding, doesn't treat it
+
+- id: TREATS_CONTRA_003
+  text: "Warfarin treats bleeding"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: CAUSES_SIDE_EFFECT
+  tags: [treats_contradicted, contradiction, data_gap]
+  notes: Anticoagulant causes bleeding
+
+- id: TREATS_CONTRA_004
+  text: "Steroids treat osteoporosis"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: CAUSES_SIDE_EFFECT
+  tags: [treats_contradicted, contradiction, data_gap]
+  notes: Long-term steroids cause osteoporosis
+
+- id: TREATS_CONTRA_005
+  text: "Metformin treats lactic acidosis"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: CAUSES_SIDE_EFFECT
+  tags: [treats_contradicted, contradiction, data_gap]
+  notes: Metformin is a rare cause of lactic acidosis
+
+- id: TREATS_CONTRA_006
+  text: "Beta blockers treat asthma"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: CONTRAINDICATED_FOR
+  tags: [treats_contradicted, contradiction, data_gap]
+  notes: Non-selective beta blockers contraindicated in asthma
+
+# =============================================================================
+# CAUSES_SIDE_EFFECT — SUPPORTED (6 cases; 2 brand-drug)
+# =============================================================================
+
+- id: CAUSES_SUPP_001
+  text: "Atorvastatin may cause muscle pain"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: CAUSES_SIDE_EFFECT
+    negated: false
+    evidence_predicate: CAUSES_SIDE_EFFECT
+  tags: [causes_supported, data_gap]
+
+- id: CAUSES_SUPP_002
+  text: "Aspirin causes stomach bleeding"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: CAUSES_SIDE_EFFECT
+    negated: false
+    evidence_predicate: CAUSES_SIDE_EFFECT
+  tags: [causes_supported, data_gap]
+
+- id: CAUSES_SUPP_003
+  text: "Warfarin causes bleeding"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: CAUSES_SIDE_EFFECT
+    negated: false
+    evidence_predicate: CAUSES_SIDE_EFFECT
+  tags: [causes_supported, data_gap]
+
+- id: CAUSES_SUPP_004
+  text: "Metformin may cause diarrhea"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: CAUSES_SIDE_EFFECT
+    negated: false
+    evidence_predicate: CAUSES_SIDE_EFFECT
+  tags: [causes_supported, data_gap]
+
+- id: CAUSES_SUPP_005
+  text: "Tylenol may cause liver damage"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: CAUSES_SIDE_EFFECT
+    negated: false
+    evidence_predicate: CAUSES_SIDE_EFFECT
+  tags: [causes_supported, brand_drug, data_gap]
+  notes: Acetaminophen hepatotoxicity at high doses
+
+- id: CAUSES_SUPP_006
+  text: "Advil causes stomach upset"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: CAUSES_SIDE_EFFECT
+    negated: false
+    evidence_predicate: CAUSES_SIDE_EFFECT
+  tags: [causes_supported, brand_drug, data_gap]
+
+# =============================================================================
+# CAUSES_SIDE_EFFECT — CONTRADICTED (6 cases): user says causes, KG has TREATS
+# =============================================================================
+
+- id: CAUSES_CONTRA_001
+  text: "Insulin causes diabetes"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: CAUSES_SIDE_EFFECT
+    negated: false
+    evidence_predicate: TREATS
+  tags: [causes_contradicted, contradiction]
+
+- id: CAUSES_CONTRA_002
+  text: "Lisinopril causes hypertension"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: CAUSES_SIDE_EFFECT
+    negated: false
+    evidence_predicate: TREATS
+  tags: [causes_contradicted, contradiction]
+
+- id: CAUSES_CONTRA_003
+  text: "Atorvastatin causes hyperlipidemia"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: CAUSES_SIDE_EFFECT
+    negated: false
+    evidence_predicate: TREATS
+  tags: [causes_contradicted, contradiction]
+
+- id: CAUSES_CONTRA_004
+  text: "Warfarin causes thrombotic disease"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: CAUSES_SIDE_EFFECT
+    negated: false
+    evidence_predicate: TREATS
+  tags: [causes_contradicted, contradiction]
+
+- id: CAUSES_CONTRA_005
+  text: "Amoxicillin causes streptococcal infection"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: CAUSES_SIDE_EFFECT
+    negated: false
+    evidence_predicate: TREATS
+  tags: [causes_contradicted, contradiction]
+
+- id: CAUSES_CONTRA_006
+  text: "Metformin causes Type 2 Diabetes"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: CAUSES_SIDE_EFFECT
+    negated: false
+    evidence_predicate: TREATS
+  tags: [causes_contradicted, contradiction]
+
+# =============================================================================
+# CONTRAINDICATED_FOR — SUPPORTED (6 cases)
+# =============================================================================
+
+- id: CONTRA_SUPP_001
+  text: "Metformin is contraindicated in chronic kidney disease"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: CONTRAINDICATED_FOR
+    negated: false
+    evidence_predicate: CONTRAINDICATED_FOR
+  tags: [contraindicated_supported]
+
+- id: CONTRA_SUPP_002
+  text: "Aspirin is contraindicated in active bleeding"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: CONTRAINDICATED_FOR
+    negated: false
+    evidence_predicate: CONTRAINDICATED_FOR
+  tags: [contraindicated_supported, data_gap]
+
+- id: CONTRA_SUPP_003
+  text: "ACE inhibitors are contraindicated in pregnancy"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: CONTRAINDICATED_FOR
+    negated: false
+    evidence_predicate: CONTRAINDICATED_FOR
+  tags: [contraindicated_supported, data_gap]
+  notes: ACE inhibitors are class label; PrimeKG may not match the class
+
+- id: CONTRA_SUPP_004
+  text: "NSAIDs should not be used in peptic ulcer disease"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: CONTRAINDICATED_FOR
+    negated: false
+    evidence_predicate: CONTRAINDICATED_FOR
+  tags: [contraindicated_supported, data_gap]
+
+- id: CONTRA_SUPP_005
+  text: "Warfarin is contraindicated with active hemorrhage"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: CONTRAINDICATED_FOR
+    negated: false
+    evidence_predicate: CONTRAINDICATED_FOR
+  tags: [contraindicated_supported, data_gap]
+
+- id: CONTRA_SUPP_006
+  text: "Beta blockers are contraindicated in asthma"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: CONTRAINDICATED_FOR
+    negated: false
+    evidence_predicate: CONTRAINDICATED_FOR
+  tags: [contraindicated_supported, data_gap]
+
+# =============================================================================
+# CONTRAINDICATED_FOR — CONTRADICTED (6 cases): user says contra, KG has TREATS
+# =============================================================================
+
+- id: CONTRA_CONTRA_001
+  text: "Metformin is contraindicated in Type 2 Diabetes"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: CONTRAINDICATED_FOR
+    negated: false
+    evidence_predicate: TREATS
+  tags: [contraindicated_contradicted, contradiction]
+
+- id: CONTRA_CONTRA_002
+  text: "Lisinopril is contraindicated in hypertension"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: CONTRAINDICATED_FOR
+    negated: false
+    evidence_predicate: TREATS
+  tags: [contraindicated_contradicted, contradiction]
+
+- id: CONTRA_CONTRA_003
+  text: "Atorvastatin is contraindicated in hyperlipidemia"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: CONTRAINDICATED_FOR
+    negated: false
+    evidence_predicate: TREATS
+  tags: [contraindicated_contradicted, contradiction]
+
+- id: CONTRA_CONTRA_004
+  text: "Insulin is contraindicated in diabetes"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: CONTRAINDICATED_FOR
+    negated: false
+    evidence_predicate: TREATS
+  tags: [contraindicated_contradicted, contradiction]
+
+- id: CONTRA_CONTRA_005
+  text: "Warfarin is contraindicated in thrombotic disease"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: CONTRAINDICATED_FOR
+    negated: false
+    evidence_predicate: TREATS
+  tags: [contraindicated_contradicted, contradiction]
+
+- id: CONTRA_CONTRA_006
+  text: "Amoxicillin should not be used in streptococcal infection"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: CONTRAINDICATED_FOR
+    negated: false
+    evidence_predicate: TREATS
+  tags: [contraindicated_contradicted, contradiction]
+
+# =============================================================================
+# INTERACTS_WITH — SUPPORTED (6 cases)
+# =============================================================================
+
+- id: INTERACTS_SUPP_001
+  text: "Patient takes Warfarin and Aspirin together"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: INTERACTS_WITH
+    negated: false
+    evidence_predicate: INTERACTS_WITH
+  tags: [interacts_supported]
+
+- id: INTERACTS_SUPP_002
+  text: "Ibuprofen interacts with lisinopril"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: INTERACTS_WITH
+    negated: false
+    evidence_predicate: INTERACTS_WITH
+  tags: [interacts_supported]
+
+- id: INTERACTS_SUPP_003
+  text: "Atorvastatin combined with clarithromycin"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: INTERACTS_WITH
+    negated: false
+    evidence_predicate: INTERACTS_WITH
+  tags: [interacts_supported]
+  notes: Statin + macrolide is a classic CYP3A4 interaction
+
+- id: INTERACTS_SUPP_004
+  text: "Aspirin and ibuprofen co-administered"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: INTERACTS_WITH
+    negated: false
+    evidence_predicate: INTERACTS_WITH
+  tags: [interacts_supported]
+
+- id: INTERACTS_SUPP_005
+  text: "Warfarin interacts with amiodarone"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: INTERACTS_WITH
+    negated: false
+    evidence_predicate: INTERACTS_WITH
+  tags: [interacts_supported]
+
+- id: INTERACTS_SUPP_006
+  text: "Metformin and contrast dye combination"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: INTERACTS_WITH
+    negated: false
+    evidence_predicate: INTERACTS_WITH
+  tags: [interacts_supported]
+  notes: Iodinated contrast holds risk in metformin patients
+
+# =============================================================================
+# HAS_SYMPTOM — SUPPORTED (6 cases)
+# =============================================================================
+
+- id: HAS_SYM_SUPP_001
+  text: "Diabetes insipidus presents with polyuria"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: HAS_SYMPTOM
+    negated: false
+    evidence_predicate: HAS_SYMPTOM
+  tags: [has_symptom_supported]
+  notes: Confirmed working after the recent label-mismatch fix
+
+- id: HAS_SYM_SUPP_002
+  text: "Migraine presents with nausea"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: HAS_SYMPTOM
+    negated: false
+    evidence_predicate: HAS_SYMPTOM
+  tags: [has_symptom_supported]
+
+- id: HAS_SYM_SUPP_003
+  text: "Pneumonia patients have cough"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: HAS_SYMPTOM
+    negated: false
+    evidence_predicate: HAS_SYMPTOM
+  tags: [has_symptom_supported, data_gap]
+
+- id: HAS_SYM_SUPP_004
+  text: "Diabetes insipidus presents with polydipsia"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: HAS_SYMPTOM
+    negated: false
+    evidence_predicate: HAS_SYMPTOM
+  tags: [has_symptom_supported]
+
+- id: HAS_SYM_SUPP_005
+  text: "Asthma is characterized by dyspnea"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: HAS_SYMPTOM
+    negated: false
+    evidence_predicate: HAS_SYMPTOM
+  tags: [has_symptom_supported, data_gap]
+  notes: Using the formal term dyspnea (clinical equivalent of "shortness of breath")
+
+- id: HAS_SYM_SUPP_006
+  text: "Hypertension may show dizziness"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: HAS_SYMPTOM
+    negated: false
+    evidence_predicate: HAS_SYMPTOM
+  tags: [has_symptom_supported, data_gap]
+
+# =============================================================================
+# Negation (6 cases): asserted=false; verdict logic flips
+# =============================================================================
+
+- id: NEG_001
+  text: "No evidence Metformin treats heart failure"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: TREATS
+    negated: true
+  tags: [negation, treats_supported]
+  notes: User denies an edge that the KG also lacks → SUPPORTED
+
+- id: NEG_002
+  text: "Aspirin does not cause stomach bleeding"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: CAUSES_SIDE_EFFECT
+    negated: true
+    evidence_predicate: CAUSES_SIDE_EFFECT
+  tags: [negation, contradiction, data_gap]
+  notes: User denies a real CAUSES edge → CONTRADICTED
+
+- id: NEG_003
+  text: "Insulin is not used to treat diabetes"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: TREATS
+    negated: true
+    evidence_predicate: TREATS
+  tags: [negation, contradiction]
+
+- id: NEG_004
+  text: "Lisinopril does not treat hypertension"
+  expected:
+    verdict: CONTRADICTED
+    asserted_predicate: TREATS
+    negated: true
+    evidence_predicate: TREATS
+  tags: [negation, contradiction]
+
+- id: NEG_005
+  text: "Atorvastatin does not cause hyperlipidemia"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: CAUSES_SIDE_EFFECT
+    negated: true
+  tags: [negation, treats_supported]
+  notes: KG has TREATS, not CAUSES → user's negation of CAUSES is correct
+
+- id: NEG_006
+  text: "Warfarin is not contraindicated in atrial fibrillation"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: CONTRAINDICATED_FOR
+    negated: true
+  tags: [negation, contraindicated_supported]
+  notes: KG has TREATS, not CONTRA, so denial of CONTRA is correct
+
+# =============================================================================
+# Lay terms (6 cases): tagged data_gap because the lay phrasing is missing
+# =============================================================================
+
+- id: LAY_001
+  text: "Tylenol for runny nose"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: TREATS
+  tags: [treats_supported, lay_term, brand_drug, data_gap]
+  notes: PrimeKG missing "runny nose" alias for rhinorrhea
+
+- id: LAY_002
+  text: "Heart attack treated with aspirin"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: TREATS
+  tags: [treats_supported, lay_term, data_gap]
+  notes: PrimeKG canonical is "myocardial infarction"
+
+- id: LAY_003
+  text: "Albuterol for shortness of breath"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: TREATS
+  tags: [treats_supported, lay_term, data_gap]
+  notes: PrimeKG canonical is "dyspnea"; "albuterol" may also be missing
+
+- id: LAY_004
+  text: "Sudafed for sinus pressure"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: TREATS
+  tags: [treats_supported, lay_term, brand_drug, data_gap]
+
+- id: LAY_005
+  text: "Allergies treated with cetirizine"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: TREATS
+    negated: false
+    evidence_predicate: TREATS
+  tags: [treats_supported, lay_term, data_gap]
+  notes: "'allergies' lay; canonical 'allergic rhinitis' or specific entity"
+
+- id: LAY_006
+  text: "Asthma presents with wheezing"
+  expected:
+    verdict: SUPPORTED
+    asserted_predicate: HAS_SYMPTOM
+    negated: false
+    evidence_predicate: HAS_SYMPTOM
+  tags: [has_symptom_supported, lay_term, data_gap]
+  notes: Coverage scan showed PrimeKG has "wheezing" but not the asthma-wheezing edge directly
+
+# =============================================================================
+# UNKNOWN / edge cases (6 cases): no extractable medical entities
+# =============================================================================
+
+- id: UNK_001
+  text: "The weather is nice today"
+  expected:
+    verdict: UNKNOWN
+    asserted_predicate: null
+    negated: false
+  tags: [unknown]
+
+- id: UNK_002
+  text: "Blood pressure 120/80 mmHg"
+  expected:
+    verdict: UNKNOWN
+    asserted_predicate: null
+    negated: false
+  tags: [unknown]
+  notes: Vitals are not medical entities for our schema
+
+- id: UNK_003
+  text: "Patient is 65 years old"
+  expected:
+    verdict: UNKNOWN
+    asserted_predicate: null
+    negated: false
+  tags: [unknown]
+
+- id: UNK_004
+  text: "XYZdrug treats ABCdisease"
+  expected:
+    verdict: UNKNOWN
+    asserted_predicate: null
+    negated: false
+  tags: [unknown]
+  notes: Fabricated entities; GLiNER should reject
+
+- id: UNK_005
+  text: "Lab results pending"
+  expected:
+    verdict: UNKNOWN
+    asserted_predicate: null
+    negated: false
+  tags: [unknown]
+
+- id: UNK_006
+  text: "Hello world"
+  expected:
+    verdict: UNKNOWN
+    asserted_predicate: null
+    negated: false
+  tags: [unknown]
+
+# =============================================================================
+# Multi-claim sentences (4 cases): test triple extraction yielding multiple verdicts
+# Multi-claim cases use `expected.any_of` to match any single produced claim;
+# the harness will verify all listed verdicts appear in the response.
+# =============================================================================
+
+- id: MULTI_001
+  text: "Patient with Type 2 Diabetes and hypertension takes Metformin and Lisinopril"
+  expected:
+    verdicts_any:        # at least one claim must match each of these verdicts
+      - SUPPORTED
+      - SUPPORTED
+    asserted_predicates_any:
+      - TREATS
+      - INTERACTS_WITH
+  tags: [multi_claim]
+  notes: Should produce multiple TREATS verifications and the drug-drug pair
+
+- id: MULTI_002
+  text: "Started Atorvastatin for hyperlipidemia. Reports muscle pain since starting"
+  expected:
+    verdicts_any:
+      - SUPPORTED
+      - SUPPORTED
+    asserted_predicates_any:
+      - TREATS
+      - CAUSES_SIDE_EFFECT
+  tags: [multi_claim]
+
+- id: MULTI_003
+  text: "Warfarin therapy for atrial fibrillation; patient also takes aspirin"
+  expected:
+    verdicts_any:
+      - SUPPORTED
+      - SUPPORTED
+    asserted_predicates_any:
+      - TREATS
+      - INTERACTS_WITH
+  tags: [multi_claim]
+
+- id: MULTI_004
+  text: "Diabetes insipidus presents with polyuria and polydipsia"
+  expected:
+    verdicts_any:
+      - SUPPORTED
+      - SUPPORTED
+    asserted_predicates_any:
+      - HAS_SYMPTOM
+      - HAS_SYMPTOM
+  tags: [multi_claim]

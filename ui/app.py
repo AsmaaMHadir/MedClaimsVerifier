@@ -420,8 +420,9 @@ with st.sidebar:
         if health_response.status_code == 200:
             health = health_response.json()
             st.success("✅ API Online")
-            st.caption(f"MedCAT: {health.get('medcat', {}).get('status', 'unknown')}")
-            st.caption(f"Neo4j: {health.get('neo4j', {}).get('status', 'unknown')}")
+            services = health.get("services", {})
+            st.caption(f"GLiNER: {services.get('gliner', {}).get('status', 'unknown')}")
+            st.caption(f"Neo4j:  {services.get('neo4j', {}).get('status', 'unknown')}")
         else:
             st.error("❌ API Error")
     except:

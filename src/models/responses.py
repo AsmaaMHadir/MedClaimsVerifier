@@ -27,6 +27,24 @@ class Entity(BaseModel):
     end: Optional[int] = Field(None, description="End character offset")
     negated: bool = Field(False, description="Whether entity is negated")
 
+    # Normalization (e.g. brand → generic via RxNorm). Populated lazily by
+    # the verifier when the original text doesn't match the knowledge graph.
+    normalized_name: Optional[str] = Field(
+        None, description="Canonical (e.g. generic ingredient) name used for KG lookup"
+    )
+    normalized_ingredients: List[str] = Field(
+        default=[], description="All ingredients (for multi-ingredient drugs)"
+    )
+    normalization_source: Optional[str] = Field(
+        None, description="Source of normalization (e.g. 'RxNorm')"
+    )
+    normalization_score: Optional[float] = Field(
+        None, description="Confidence of the normalization (0-100 for RxNorm)"
+    )
+    normalization_id: Optional[str] = Field(
+        None, description="External identifier (e.g. RxCUI)"
+    )
+
 
 class Evidence(BaseModel):
     """Evidence supporting a verification"""
@@ -38,11 +56,31 @@ class Evidence(BaseModel):
 
 class ClaimVerification(BaseModel):
     """Verification result for a single claim"""
-    claim: str = Field(..., description="The claim being verified")
+    claim: str = Field(..., description="The claim being verified, in the user's words")
     status: VerificationStatus = Field(..., description="Verification status")
     confidence: float = Field(..., description="Overall confidence (0-1)")
     entities: List[Entity] = Field(default=[], description="Entities in claim")
     evidence: List[Evidence] = Field(default=[], description="Supporting evidence")
+
+    # Triple-level metadata (populated by the predicate-aware verifier)
+    asserted_predicate: Optional[str] = Field(
+        None,
+        description="The relationship the user asserted "
+                    "(TREATS, CAUSES_SIDE_EFFECT, CONTRAINDICATED_FOR, INTERACTS_WITH, HAS_SYMPTOM)",
+    )
+    evidence_predicate: Optional[str] = Field(
+        None,
+        description="The relationship found in the knowledge graph "
+                    "(may differ from asserted_predicate when CONTRADICTED)",
+    )
+    negated: bool = Field(
+        False,
+        description="True if the user's claim was negated (e.g. 'no evidence X treats Y')",
+    )
+    explanation: Optional[str] = Field(
+        None,
+        description="Human-readable note about the verdict, especially when SUPPORTED/CONTRADICTED differ from asserted vs evidence",
+    )
 
 
 class VerifyResponse(BaseModel):
@@ -101,6 +139,27 @@ class DiseaseInfo(BaseModel):
     related_conditions: List[str] = Field(default=[], description="Related diseases")
 
 
+class GraphNode(BaseModel):
+    """A node in a knowledge graph subgraph response"""
+    id: str
+    name: str
+    type: str
+    text: Optional[str] = None
+
+
+class GraphEdge(BaseModel):
+    """An edge in a knowledge graph subgraph response"""
+    source: str
+    target: str
+    relationship: str
+
+
+class NeighborhoodResponse(BaseModel):
+    """Subgraph around an entity (1-hop neighborhood)"""
+    nodes: List[GraphNode] = Field(default=[], description="Graph nodes")
+    edges: List[GraphEdge] = Field(default=[], description="Graph edges")
+
+
 class HealthResponse(BaseModel):
     """Health check response"""
     status: str = Field(..., description="Overall status (healthy, degraded, unhealthy)")
@@ -119,7 +178,7 @@ class ErrorResponse(BaseModel):
                 "success": False,
                 "error": {
                     "code": "SERVICE_UNAVAILABLE",
-                    "message": "MedCAT service is not responding"
+                    "message": "Knowledge graph service is not responding"
                 }
             }
         }

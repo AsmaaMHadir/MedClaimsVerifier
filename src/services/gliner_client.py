@@ -1,11 +1,12 @@
 """
 GLiNER Client for Medical Entity Extraction
-Replaces MedCAT with zero-shot GLiNER for cleaner entity extraction
+Zero-shot NER over drug / disease / symptom types.
 """
 
 from typing import List, Optional
 from loguru import logger
 
+from src.config.settings import get_settings
 from src.models.responses import Entity
 
 
@@ -15,14 +16,23 @@ class GLiNERClient:
     # Medical entity types to extract
     ENTITY_TYPES = ["drug", "disease", "symptom"]
 
-    def __init__(self, model_name: str = "urchade/gliner_medium-v2.1"):
+    def __init__(
+        self,
+        model_name: Optional[str] = None,
+        threshold: Optional[float] = None,
+    ):
         """
         Initialize GLiNER client
 
         Args:
-            model_name: HuggingFace model identifier for GLiNER
+            model_name: HuggingFace model identifier for GLiNER.
+                Falls back to settings.gliner_model.
+            threshold: Default extraction confidence threshold (0-1).
+                Falls back to settings.gliner_threshold.
         """
-        self.model_name = model_name
+        settings = get_settings()
+        self.model_name = model_name or settings.gliner_model
+        self.threshold = threshold if threshold is not None else settings.gliner_threshold
         self._model = None
         self._loaded = False
 
@@ -64,13 +74,18 @@ class GLiNERClient:
             logger.error(f"GLiNER health check failed: {e}")
             return {"status": "unhealthy", "error": str(e)}
 
-    async def extract_entities(self, text: str, threshold: float = 0.5) -> List[Entity]:
+    async def extract_entities(
+        self,
+        text: str,
+        threshold: Optional[float] = None,
+    ) -> List[Entity]:
         """
         Extract medical entities from text using GLiNER
 
         Args:
             text: Medical text to process
-            threshold: Minimum confidence score (0-1)
+            threshold: Minimum confidence score (0-1). Defaults to the
+                client-level threshold (settings.gliner_threshold).
 
         Returns:
             List of extracted Entity objects
@@ -82,11 +97,13 @@ class GLiNERClient:
 
             logger.debug(f"Extracting entities from text: {text[:100]}...")
 
+            effective_threshold = threshold if threshold is not None else self.threshold
+
             # GLiNER extraction
             predictions = self._model.predict_entities(
                 text,
                 self.ENTITY_TYPES,
-                threshold=threshold
+                threshold=effective_threshold
             )
 
             entities = []

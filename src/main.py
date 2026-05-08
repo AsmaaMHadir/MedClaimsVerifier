@@ -19,6 +19,9 @@ from src.config.logging import setup_logging
 from src.api.routes import router
 from src.services.gliner_client import get_gliner_client
 from src.services.knowledge_graph import get_knowledge_graph_service
+from src.services.drug_normalizer import get_drug_normalizer
+from src.services.sapbert_normalizer import get_sapbert_normalizer
+from src.services.llm_predicate_resolver import get_llm_predicate_resolver
 from src.services.cache import clear_all_caches, get_cache_stats
 
 # Initialize rate limiter
@@ -39,7 +42,7 @@ async def lifespan(app: FastAPI):
     setup_logging(log_level=settings.log_level)
 
     logger.info("Starting MedVerify API...")
-    logger.info("Entity Extractor: GLiNER (urchade/gliner_medium-v2.1)")
+    logger.info(f"Entity Extractor: GLiNER ({settings.gliner_model}, threshold={settings.gliner_threshold})")
     logger.info(f"Neo4j URI: {settings.neo4j_uri[:30]}..." if settings.neo4j_uri else "Neo4j URI: not configured")
     logger.info(f"Rate limit: {settings.rate_limit_per_minute}/minute")
     logger.info(f"CORS origins: {settings.cors_origins}")
@@ -61,6 +64,15 @@ async def lifespan(app: FastAPI):
 
     kg = get_knowledge_graph_service()
     await kg.close()
+
+    normalizer = get_drug_normalizer()
+    await normalizer.close()
+
+    sapbert = get_sapbert_normalizer()
+    await sapbert.close()
+
+    llm_resolver = get_llm_predicate_resolver()
+    await llm_resolver.close()
 
     # Clear caches
     clear_all_caches()

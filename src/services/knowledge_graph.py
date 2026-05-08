@@ -10,6 +10,7 @@ from loguru import logger
 
 from src.config.settings import get_settings
 from src.services.cache import cached_drug_lookup, cached_disease_lookup, cached_relationship
+from src.services.sapbert_normalizer import get_sapbert_normalizer
 
 
 class KnowledgeGraphService:
@@ -56,101 +57,130 @@ class KnowledgeGraphService:
 
     # ==================== Drug-Disease Queries ====================
 
+    # ----- Cypher fragments: match a node by name OR synonym OR trade_name -----
+    # OptimusKG nodes carry synonym arrays natively, so the verifier no longer
+    # needs an external alias resolver (RxNorm) for the typical lookup.
+    #
+    # Bidirectional CONTAINS:
+    #   - Node name contains user term: "diabetes" matches "type 2 diabetes"
+    #   - User term contains node name: "chronic kidney disease" matches "kidney disease"
+    # Known weakness: substring matches across stems (Omeprazole/Esomeprazole)
+    # which we accept because the synonym data legitimately encodes a chemical
+    # isomer relationship. The bigger lift comes from SapBERT for lay terms.
+    # `size(s) >= 4` filters out 1-3 character synonyms/trade_names which were
+    # firing false positives via the second leg of the bidirectional CONTAINS.
+    # Real example: METHIONINE has "M" and "Met" as synonyms, so the predicate
+    # `"metformin" CONTAINS "m"` would match METHIONINE's contraindication
+    # edges. 4 chars is short enough to keep "ASA", "PPI" cases (none observed
+    # in OptimusKG so far) while filtering this class of bug.
+    _DRUG_MATCH = (
+        "((toLower({n}.name) CONTAINS toLower(${p}) "
+        "  OR toLower(${p}) CONTAINS toLower({n}.name)) "
+        " OR ANY(s IN coalesce({n}.synonyms, []) "
+        "        WHERE size(s) >= 4 "
+        "          AND (toLower(s) CONTAINS toLower(${p}) "
+        "               OR toLower(${p}) CONTAINS toLower(s))) "
+        " OR ANY(t IN coalesce({n}.trade_names, []) "
+        "        WHERE size(t) >= 4 "
+        "          AND (toLower(t) CONTAINS toLower(${p}) "
+        "               OR toLower(${p}) CONTAINS toLower(t))))"
+    )
+    _DISEASE_MATCH = (
+        "((toLower({n}.name) CONTAINS toLower(${p}) "
+        "  OR toLower(${p}) CONTAINS toLower({n}.name)) "
+        " OR ANY(s IN coalesce({n}.exact_synonyms, []) "
+        "        WHERE size(s) >= 4 "
+        "          AND (toLower(s) CONTAINS toLower(${p}) "
+        "               OR toLower(${p}) CONTAINS toLower(s))) "
+        " OR ANY(s IN coalesce({n}.related_synonyms, []) "
+        "        WHERE size(s) >= 4 "
+        "          AND (toLower(s) CONTAINS toLower(${p}) "
+        "               OR toLower(${p}) CONTAINS toLower(s))))"
+    )
+    _EFFECT_MATCH = _DISEASE_MATCH  # phenotype nodes use the same synonym fields
+
     async def check_drug_treats_disease(self, drug_name: str, disease_name: str) -> Dict[str, Any]:
         """
-        Check if a drug treats a disease
+        Check if a drug treats a disease, matching across name + synonyms + trade_names.
 
-        Args:
-            drug_name: Name of the drug
-            disease_name: Name of the disease
-
-        Returns:
-            Dict with 'found' boolean and 'evidence' list
+        Filtered to approved indications only:
+        OptimusKG's TREATS edges (sourced largely from Open Targets) include
+        clinical trials at every phase. We restrict to FDA-approved (phase >= 4)
+        OR edges without phase metadata (DrugCentral, etc.) so the verifier
+        reflects approved-indication clinical truth, not investigational use.
         """
-        query = """
+        query = f"""
         MATCH (d:Drug)-[r:TREATS]->(dis:Disease)
-        WHERE toLower(d.name) CONTAINS toLower($drug)
-          AND toLower(dis.name) CONTAINS toLower($disease)
+        WHERE {self._DRUG_MATCH.format(n='d', p='drug')}
+          AND {self._DISEASE_MATCH.format(n='dis', p='disease')}
+          AND (r.max_clinical_trial_phase IS NULL OR r.max_clinical_trial_phase >= 4.0)
         RETURN d.name as drug, dis.name as disease, type(r) as relationship
         LIMIT 5
         """
-        return await self._execute_relationship_query(query, drug=drug_name, disease=disease_name)
+        return await self._query_with_synonym_fallback(
+            query,
+            params={"drug": drug_name, "disease": disease_name},
+            fallbacks=[("disease", "Disease")],
+        )
 
     async def check_contraindication(self, drug_name: str, condition_name: str) -> Dict[str, Any]:
         """
-        Check if a drug is contraindicated for a condition
-
-        Args:
-            drug_name: Name of the drug
-            condition_name: Name of the condition
-
-        Returns:
-            Dict with 'found' boolean and 'evidence' list
+        Check if a drug is contraindicated for a condition, matching across
+        name + synonyms + trade_names. OptimusKG also stores Drug-Phenotype
+        contraindications, so we union both edges.
         """
-        query = """
-        MATCH (d:Drug)-[r:CONTRAINDICATED_FOR]->(dis:Disease)
-        WHERE toLower(d.name) CONTAINS toLower($drug)
-          AND toLower(dis.name) CONTAINS toLower($condition)
-        RETURN d.name as drug, dis.name as condition, type(r) as relationship
+        query = f"""
+        MATCH (d:Drug)-[r:CONTRAINDICATED_FOR]->(t)
+        WHERE (t:Disease OR t:Effect)
+          AND {self._DRUG_MATCH.format(n='d', p='drug')}
+          AND {self._DISEASE_MATCH.format(n='t', p='condition')}
+        RETURN d.name as drug, t.name as condition, type(r) as relationship
         LIMIT 5
         """
-        return await self._execute_relationship_query(query, drug=drug_name, condition=condition_name)
+        # Condition can be either Disease or Effect — try Disease first.
+        return await self._query_with_synonym_fallback(
+            query,
+            params={"drug": drug_name, "condition": condition_name},
+            fallbacks=[("condition", "Disease"), ("condition", "Effect")],
+        )
 
     async def check_side_effect(self, drug_name: str, effect_name: str) -> Dict[str, Any]:
-        """
-        Check if a drug causes a side effect
-
-        Args:
-            drug_name: Name of the drug
-            effect_name: Name of the side effect
-
-        Returns:
-            Dict with 'found' boolean and 'evidence' list
-        """
-        query = """
+        """Check if a drug causes a side effect (Drug → Effect via CAUSES_SIDE_EFFECT)."""
+        query = f"""
         MATCH (d:Drug)-[r:CAUSES_SIDE_EFFECT]->(e:Effect)
-        WHERE toLower(d.name) CONTAINS toLower($drug)
-          AND toLower(e.name) CONTAINS toLower($effect)
+        WHERE {self._DRUG_MATCH.format(n='d', p='drug')}
+          AND {self._EFFECT_MATCH.format(n='e', p='effect')}
         RETURN d.name as drug, e.name as effect, type(r) as relationship
         LIMIT 5
         """
-        return await self._execute_relationship_query(query, drug=drug_name, effect=effect_name)
+        return await self._query_with_synonym_fallback(
+            query,
+            params={"drug": drug_name, "effect": effect_name},
+            fallbacks=[("effect", "Effect")],
+        )
 
     async def check_disease_symptom(self, disease_name: str, symptom_name: str) -> Dict[str, Any]:
-        """
-        Check if a disease has a symptom
-
-        Args:
-            disease_name: Name of the disease
-            symptom_name: Name of the symptom
-
-        Returns:
-            Dict with 'found' boolean and 'evidence' list
-        """
-        query = """
-        MATCH (dis:Disease)-[r:HAS_SYMPTOM]->(p:Phenotype)
-        WHERE toLower(dis.name) CONTAINS toLower($disease)
-          AND toLower(p.name) CONTAINS toLower($symptom)
+        """Check if a disease has a symptom (Disease → Effect via HAS_SYMPTOM)."""
+        query = f"""
+        MATCH (dis:Disease)-[r:HAS_SYMPTOM]->(p:Effect)
+        WHERE {self._DISEASE_MATCH.format(n='dis', p='disease')}
+          AND {self._EFFECT_MATCH.format(n='p', p='symptom')}
         RETURN dis.name as disease, p.name as symptom, type(r) as relationship
         LIMIT 5
         """
-        return await self._execute_relationship_query(query, disease=disease_name, symptom=symptom_name)
+        # Both sides are commonly lay-termed ("heart attack", "shortness of breath")
+        return await self._query_with_synonym_fallback(
+            query,
+            params={"disease": disease_name, "symptom": symptom_name},
+            fallbacks=[("symptom", "Effect"), ("disease", "Disease")],
+        )
 
     async def check_drug_interaction(self, drug1_name: str, drug2_name: str) -> Dict[str, Any]:
-        """
-        Check if two drugs interact
-
-        Args:
-            drug1_name: Name of first drug
-            drug2_name: Name of second drug
-
-        Returns:
-            Dict with 'found' boolean and 'evidence' list
-        """
-        query = """
+        """Check if two drugs interact (undirected, matched across synonyms + trade_names)."""
+        query = f"""
         MATCH (d1:Drug)-[r:INTERACTS_WITH]-(d2:Drug)
-        WHERE toLower(d1.name) CONTAINS toLower($drug1)
-          AND toLower(d2.name) CONTAINS toLower($drug2)
+        WHERE {self._DRUG_MATCH.format(n='d1', p='drug1')}
+          AND {self._DRUG_MATCH.format(n='d2', p='drug2')}
         RETURN d1.name as drug1, d2.name as drug2, type(r) as relationship
         LIMIT 5
         """
@@ -213,7 +243,7 @@ class KnowledgeGraphService:
         WITH dis LIMIT 1
         OPTIONAL MATCH (d:Drug)-[:TREATS]->(dis)
         WITH dis, collect(DISTINCT d.name)[0..10] as treatments
-        OPTIONAL MATCH (dis)-[:HAS_SYMPTOM]->(p:Phenotype)
+        OPTIONAL MATCH (dis)-[:HAS_SYMPTOM]->(p:Effect)
         WITH dis, treatments, collect(DISTINCT p.name)[0..10] as symptoms
         OPTIONAL MATCH (dis)-[:RELATED_DISEASE]-(related:Disease)
         RETURN dis.name as disease,
@@ -370,6 +400,56 @@ class KnowledgeGraphService:
             return {"nodes": [], "edges": []}
 
     # ==================== Helper Methods ====================
+
+    async def _query_with_synonym_fallback(
+        self,
+        query: str,
+        *,
+        params: Dict[str, Any],
+        fallbacks: List[tuple],
+    ) -> Dict[str, Any]:
+        """
+        Run `query` with `params`. On miss, try mapping each fallback param
+        through SapBERT to a canonical OptimusKG node name and retry.
+
+        `fallbacks` is a list of `(param_name, label)` tuples. Each is tried in
+        order; if any retry hits, we return that result. Failures are logged but
+        never raised — SapBERT is a best-effort enrichment, not a hard dep.
+        """
+        result = await self._execute_relationship_query(query, **params)
+        if result["found"]:
+            return result
+
+        cur = dict(params)
+        for param_name, label in fallbacks:
+            term = cur.get(param_name)
+            if not term:
+                continue
+            canonical = await self._maybe_canonicalize(term, label)
+            if not canonical or canonical.lower() == str(term).lower():
+                continue
+            retry_params = {**cur, param_name: canonical}
+            retry = await self._execute_relationship_query(query, **retry_params)
+            if retry["found"]:
+                logger.info(
+                    f"SapBERT fallback hit: {param_name}={term!r} -> {canonical!r} "
+                    f"(:{label}) — {len(retry['evidence'])} rows"
+                )
+                return retry
+            cur = retry_params  # let later fallbacks see the canonicalised value
+        return result
+
+    async def _maybe_canonicalize(self, term: str, label: str) -> Optional[str]:
+        """Map a (possibly lay) term to its canonical OptimusKG node name. None on miss."""
+        try:
+            normalizer = get_sapbert_normalizer()
+            match = await normalizer.find_canonical(term, label=label)
+        except Exception as e:
+            logger.warning(f"SapBERT lookup failed for {term!r}/{label}: {e}")
+            return None
+        if match is None or not match.canonical:
+            return None
+        return match.canonical
 
     async def _execute_relationship_query(self, query: str, **params) -> Dict[str, Any]:
         """Execute a relationship query and return standardized result"""

@@ -4,6 +4,30 @@
 .env
 .env.*
 !.env.example
+ui-web/.env.local
+ui-web/.env*.local
+
+# ========================
+# Internal docs / planning / scratch
+# (kept local but never shipped)
+# ========================
+PRD.md
+TODO.md
+NOTES.md
+SCRATCH.md
+MEDVERIFY_TECHNICAL_DOCUMENTATION.md
+*.draft.md
+docs/internal/
+
+# ========================
+# Agent / IDE scratch files
+# ========================
+.claude/
+.cursor/
+.aider*
+.codex/
+CLAUDE.md
+AGENTS.md
 
 # ========================
 # Python
@@ -24,6 +48,7 @@ venv/
 .venv/
 env/
 ENV/
+mcenv/
 
 # ========================
 # Testing & Coverage
@@ -33,6 +58,9 @@ ENV/
 htmlcov/
 *.cover
 .coverage.*
+tests/eval/results/
+tests/eval/audit_report.md
+tools/coverage_report.json
 
 # ========================
 # IDE & Editors
@@ -51,15 +79,18 @@ logs/
 *.log
 
 # ========================
-# Large Data Files
+# Large data / KG dumps / caches
 # ========================
 *.csv
 *.zip
 *.tar.gz
 *.parquet
+*.npz
+*.sqlite
+data/
 
 # ========================
-# ML Models & Weights
+# ML models & weights
 # ========================
 medcat_model.zip
 medcat_model/
@@ -71,24 +102,21 @@ medcat_model/
 *.safetensors
 
 # ========================
-# Jupyter Notebooks
+# Jupyter
 # ========================
 .ipynb_checkpoints/
 
 # ========================
-# Nested Repositories
+# Node / Next.js (ui-web)
 # ========================
-medverify-api/
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
 
 # ========================
-# Project-Specific
-# ========================
-.claude/
-PRD.md
-TODO.md
-
-# ========================
-# OS-Specific
+# OS
 # ========================
 Thumbs.db
 *.Zone.Identifier

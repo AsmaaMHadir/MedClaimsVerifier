@@ -16,11 +16,13 @@ from src.models.responses import (
     DiseaseInfo,
     HealthResponse,
     ErrorResponse,
-    Entity
+    Entity,
+    NeighborhoodResponse
 )
 from src.services.gliner_client import get_gliner_client, GLiNERClient
 from src.services.knowledge_graph import get_knowledge_graph_service, KnowledgeGraphService
 from src.services.claim_verifier import get_claim_verifier, ClaimVerifier
+from src.services.verification_logger import get_verification_logger
 from src.middleware.auth import verify_api_key
 from src.config.settings import get_settings
 
@@ -102,14 +104,19 @@ async def verify_claims(request: Request, body: VerifyRequest):
         claims = await verifier.verify_text(body.text)
         
         processing_time = (time.time() - start_time) * 1000
-        
-        return VerifyResponse(
+
+        response = VerifyResponse(
             success=True,
             claims=claims,
             warnings=[],
             processing_time_ms=round(processing_time, 2)
         )
-        
+
+        # Append measurement row (best-effort, never raises)
+        get_verification_logger().log(body.text, response)
+
+        return response
+
     except Exception as e:
         logger.error(f"Verification failed: {e}")
         raise HTTPException(
@@ -237,6 +244,52 @@ async def get_disease_information(request: Request, disease_name: str):
         symptoms=info.get("symptoms", []),
         related_conditions=info.get("related_conditions", [])
     )
+
+
+# ==================== Neighborhood ====================
+
+@router.get(
+    "/neighborhood/{entity_type}/{entity_name}",
+    response_model=NeighborhoodResponse,
+    tags=["Knowledge Graph"],
+    dependencies=[Depends(verify_api_key)]
+)
+@limiter.limit("120/minute")
+async def get_entity_neighborhood_route(
+    request: Request,
+    entity_type: str,
+    entity_name: str,
+    limit: int = 5,
+):
+    """
+    Return the graph neighborhood (nodes + edges) of an entity.
+
+    - **entity_type**: "Drug" or "Disease"
+    - **entity_name**: Name to match (case-insensitive contains)
+    - **limit**: 1..25 neighbors, default 5
+
+    **Example:** `/neighborhood/Drug/metformin?limit=10`
+    """
+    if entity_type not in {"Drug", "Disease"}:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_TYPE",
+                "message": "entity_type must be 'Drug' or 'Disease'"
+            }
+        )
+    if len(entity_name) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_NAME",
+                "message": "entity_name must be at least 2 characters"
+            }
+        )
+
+    capped = max(1, min(int(limit), 25))
+    kg = get_knowledge_graph_service()
+    return await kg.get_entity_neighborhood(entity_name, entity_type, limit=capped)
 
 
 # ==================== Search ====================

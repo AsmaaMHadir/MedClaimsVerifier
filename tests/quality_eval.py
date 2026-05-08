@@ -15,7 +15,7 @@ from typing import List, Dict, Any, Optional
 
 # Configuration
 API_BASE_URL = "http://localhost:8000"
-TIMEOUT = 120  # seconds (MedCAT cold start can be slow)
+TIMEOUT = 120  # seconds (GLiNER cold-start may take a while on first request)
 RESULTS_DIR = Path(__file__).parent / "results"
 
 
