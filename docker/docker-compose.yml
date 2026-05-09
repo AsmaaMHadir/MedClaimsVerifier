@@ -1,0 +1,78 @@
+# MedVerify Docker demo: API + seeded Neo4j with a 5K-edge OptimusKG subset.
+#
+# Bring up:    make demo                  (or:  docker compose -f docker/docker-compose.yml up -d)
+# Tear down:  make demo-down              (or:  docker compose -f docker/docker-compose.yml down -v)
+# Logs:       docker compose -f docker/docker-compose.yml logs -f api
+
+services:
+
+  neo4j:
+    image: neo4j:5.20-community
+    container_name: medverify-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/medverifydemo
+      # APOC ships in the community image since 5.x; we use it for runFiles().
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+      NEO4J_dbms_memory_heap_initial__size: "512m"
+      NEO4J_dbms_memory_heap_max__size: "1G"
+    ports:
+      - "7474:7474"   # Neo4j Browser UI
+      - "7687:7687"   # Bolt protocol
+    volumes:
+      - neo4j-data:/data
+      - ./neo4j-seed:/seed:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+  # One-shot seeder: waits for Neo4j to be healthy, runs the demo subset Cypher,
+  # then exits. Idempotent — the Cypher uses MERGE so re-runs are safe.
+  seeder:
+    image: neo4j:5.20-community
+    container_name: medverify-seeder
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    volumes:
+      - ./neo4j-seed:/seed:ro
+    entrypoint:
+      - bash
+      - -c
+      - |
+        echo '▸ Loading demo subset into Neo4j...'
+        cypher-shell -a bolt://neo4j:7687 -u neo4j -p medverifydemo \
+          --file /seed/load_demo_subset.cypher && echo '✅ Demo KG loaded.'
+    restart: "no"
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    image: medverify-api:demo
+    container_name: medverify-api
+    restart: unless-stopped
+    depends_on:
+      seeder:
+        condition: service_completed_successfully
+    environment:
+      NEO4J_URI: "bolt://neo4j:7687"
+      NEO4J_USER: "neo4j"
+      NEO4J_PASSWORD: "medverifydemo"
+      LLM_FALLBACK_ENABLED: "false"   # demo runs without API keys
+      LOG_LEVEL: "INFO"
+      CORS_ORIGINS: '["http://localhost:3000","http://localhost:8501"]'
+    ports:
+      - "8000:8000"
+    # GLiNER weights (~1-2 GB) are downloaded on first /verify call and
+    # cached in this volume so subsequent restarts are fast.
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+
+volumes:
+  neo4j-data:
+  hf-cache:

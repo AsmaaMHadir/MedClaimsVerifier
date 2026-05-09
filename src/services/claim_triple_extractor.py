@@ -13,7 +13,7 @@ Two-stage extraction:
        X for Y"), paraphrases the rules don't anticipate, sophisticated
        negation. Only fires when rules return NONE for a candidate pair.
 
-The LLM is a paraphrase parser, not a knowledge source: its single job is
+The LLM is a paraphrase parser: its single job is
 to identify which relation the user is asserting between two named
 entities, from a fixed enum. Cached in SQLite, so repeat phrasings are free.
 

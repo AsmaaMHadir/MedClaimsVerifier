@@ -40,6 +40,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+*.whl
+*.tar.gz
 
 # ========================
 # Virtual Environments
@@ -89,6 +91,10 @@ logs/
 *.sqlite
 data/
 
+# Exception: the demo Cypher seed is committed so `make demo` works without
+# needing the full OptimusKG download.
+!docker/neo4j-seed/load_demo_subset.cypher
+
 # ========================
 # ML models & weights
 # ========================
@@ -105,7 +111,7 @@ medcat_model/
 # Jupyter
 # ========================
 .ipynb_checkpoints/
-
+*.ipynb
 # ========================
 # Node / Next.js (ui-web)
 # ========================

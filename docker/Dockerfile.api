@@ -1,0 +1,56 @@
+# MedVerify API container — multi-stage build for a smaller runtime image.
+#
+# Stage 1 ('builder') installs Python deps with the CPU-only torch wheel
+# (PyTorch GPU wheels are ~2 GB; CPU is ~150 MB). Stage 2 copies the resolved
+# site-packages into a slim runtime image and bakes the SapBERT index files
+# (~140 MB) so lay-term recovery works offline.
+#
+# Build:    docker build -f docker/Dockerfile.api -t medverify-api .
+# Run:      docker compose -f docker/docker-compose.yml up
+
+# ============================================================================
+FROM python:3.11-slim AS builder
+# ============================================================================
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /build
+COPY requirements.txt pyproject.toml ./
+
+# CPU-only torch wheel — saves ~1.5 GB vs the default GPU build.
+RUN pip install --user --upgrade pip && \
+    pip install --user --extra-index-url https://download.pytorch.org/whl/cpu \
+        torch && \
+    pip install --user -r requirements.txt
+
+# ============================================================================
+FROM python:3.11-slim AS runtime
+# ============================================================================
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH=/root/.local/bin:$PATH
+
+WORKDIR /app
+
+# Bring deps from the builder stage
+COPY --from=builder /root/.local /root/.local
+
+# Application code
+COPY src/ src/
+COPY medverify_core/ medverify_core/
+
+# Pre-built SapBERT index (140 MB) so the demo gets lay-term recovery without
+# the user paying for a 20-min CPU embedding pass on first run. Skipped if the
+# files don't exist locally — the verifier degrades to plain-Cypher matching.
+COPY data/sapbert/ /app/data/sapbert/
+
+EXPOSE 8000
+
+# Healthcheck so docker-compose can gate on the API being ready.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=12 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)"
+
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

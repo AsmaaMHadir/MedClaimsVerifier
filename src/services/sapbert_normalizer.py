@@ -38,8 +38,8 @@ from loguru import logger
 
 SAPBERT_MODEL = "cambridgeltl/SapBERT-from-PubMedBERT-fulltext"
 DEFAULT_INDEX_DIR = Path("data/sapbert")
-DEFAULT_DB_PATH = Path("data/drug_normalization.sqlite")  # share the file
-DEFAULT_THRESHOLD = 0.77         # cosine similarity in [-1, 1]; tuned so "heart attack"→"myocardial infarction" (0.778) clears, junk mappings ≤0.65 don't
+DEFAULT_DB_PATH = Path("data/drug_normalization.sqlite")  
+DEFAULT_THRESHOLD = 0.77         
 DEFAULT_BATCH_SIZE = 64
 EMBED_DIM = 768                  # SapBERT outputs 768-dim vectors
 

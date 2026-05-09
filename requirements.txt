@@ -26,6 +26,21 @@ cachetools>=5.3.0
 gliner>=0.2.0
 numpy>=1.26.4  # Required for gliner compatibility
 
+# === ML / Embeddings (SapBERT lay-term canonicalisation layer) ===
+# Imported lazily by src/services/sapbert_normalizer.py on first KG miss.
+# Without these, SapBERT fallback raises ModuleNotFoundError mid-request.
+transformers>=4.40.0,<5.0.0
+torch>=2.2.0,<3.0.0
+
+# === LLM Predicate Fallback ===
+# Imported lazily by src/services/llm_predicate_resolver.py. Pulls boto3
+# transitively via the [bedrock] extra so AWS Bedrock support works
+# out-of-the-box; the verifier degrades gracefully when no key is set.
+anthropic[bedrock]>=0.34.0,<1.0.0
+
+# === Evaluation harness ===
+pyyaml>=6.0,<7.0
+
 # === Testing ===
 pytest>=7.4.0
 pytest-asyncio>=0.23.0
@@ -38,5 +53,5 @@ ruff>=0.1.9
 streamlit>=1.32.0
 pyvis>=0.3.2
 
-# NOTE: GLiNER is a lightweight zero-shot NER model that runs locally.
-# It automatically downloads the model (~500MB) on first use.
+# NOTE: GLiNER weights (~1-2 GB for the biomed-large default) and SapBERT
+# weights (~440 MB) download from Hugging Face on first use.

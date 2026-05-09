@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "medverify-core"
+version = "0.1.0"
+description = "Verify medical claims against a curated biomedical knowledge graph (OptimusKG/Neo4j) with GLiNER entity extraction and SapBERT lay-term canonicalisation."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Asmaa Hadir" }]
+requires-python = ">=3.11"
+keywords = ["medical", "nlp", "rag", "knowledge-graph", "neo4j", "gliner", "sapbert", "verification"]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "neo4j>=5.16.0,<6.0.0",
+    "gliner>=0.2.0",
+    "transformers>=4.40.0,<5.0.0",
+    "torch>=2.2.0,<3.0.0",
+    "numpy>=1.26.4",
+    "pydantic>=2.5.0,<3.0.0",
+    "pydantic-settings>=2.3.0,<3.0.0",
+    "loguru>=0.7.0",
+    "httpx>=0.26.0",
+    "cachetools>=5.3.0",
+]
+
+[project.optional-dependencies]
+llm     = ["anthropic[bedrock]>=0.34.0,<1.0.0"]
+service = ["fastapi>=0.109.0", "uvicorn[standard]>=0.27.0", "slowapi>=0.1.9", "python-multipart>=0.0.6"]
+eval    = ["pyyaml>=6.0", "pytest>=7.4.0", "pytest-asyncio>=0.23.0"]
+dev     = ["pytest>=7.4.0", "pytest-asyncio>=0.23.0", "ruff>=0.1.9", "black>=23.12.0"]
+
+[project.urls]
+Homepage   = "https://github.com/AsmaaMHadir/medclaimsverifier"
+Repository = "https://github.com/AsmaaMHadir/medclaimsverifier"
+
+[tool.hatch.build.targets.wheel]
+# Ship medverify_core as the public surface plus src/* (which it composes).
+packages = ["medverify_core", "src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
